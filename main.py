@@ -1,98 +1,119 @@
 import os
 import uuid
+import threading
 from datetime import datetime
+
 from flask import Flask, request
 import telebot
 from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 
-# ===== ENV =====
+# ================== ENV VARIABLES ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-BLOGGER_PAGE = os.environ.get("BLOGGER_PAGE")
 MONGO_URI = os.environ.get("MONGO_URI")
+BLOGGER_PAGE = os.environ.get("BLOGGER_PAGE")
+PORT = int(os.environ.get("PORT", 10000))
 
-MAX_SIZE = 20 * 1024 * 1024  # 20MB
+if not BOT_TOKEN or not MONGO_URI or not BLOGGER_PAGE:
+    raise RuntimeError("Missing required environment variables")
 
-# ===== INIT =====
-bot = telebot.TeleBot(BOT_TOKEN)
+# ================== INIT ==================
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
 app = Flask(__name__)
 
-mongo = MongoClient(MONGO_URI)
-db = mongo["tg_file_bot"]
-files_col = db["files"]
+# ================== DATABASE ==================
+try:
+    mongo = MongoClient(MONGO_URI)
+    db = mongo["tg_file_bot"]
+    files_col = db["files"]
+except PyMongoError as e:
+    raise RuntimeError(f"MongoDB connection failed: {e}")
 
-# ===== HELPERS =====
+# ================== CONSTANTS ==================
+MAX_SIZE = 20 * 1024 * 1024  # 20 MB
+
+# ================== HELPERS ==================
 def human_size(size):
     for unit in ["B", "KB", "MB", "GB"]:
         if size < 1024:
             return f"{size:.2f}{unit}"
         size /= 1024
+    return f"{size:.2f}TB"
 
-# ===== COMMANDS =====
+# ================== BOT COMMANDS ==================
 @bot.message_handler(commands=["start"])
-def start_cmd(message):
-    name = message.from_user.first_name
+def cmd_start(message):
+    name = message.from_user.first_name or "User"
     bot.reply_to(
         message,
         f"👋 Hello {name}!\n\n"
-        "Send me a file (max 20MB) and I will generate a download link.\n\n"
+        "📤 Send me a file (max 20MB)\n"
+        "🔗 I will generate a download link\n\n"
         "Commands:\n"
-        "/myfiles – view your uploads\n"
-        "/help – how to use\n"
+        "/myfiles – view your files\n"
+        "/help – usage info"
     )
 
 @bot.message_handler(commands=["help"])
-def help_cmd(message):
+def cmd_help(message):
     bot.reply_to(
         message,
-        "📌 How it works:\n\n"
+        "ℹ️ How to use this bot:\n\n"
         "1️⃣ Send a file (≤20MB)\n"
-        "2️⃣ Get a download link\n"
-        "3️⃣ Share the link\n\n"
+        "2️⃣ Receive a Blogger download link\n"
+        "3️⃣ Share it anywhere\n\n"
         "Commands:\n"
-        "/myfiles – list your files\n"
-        "/delete <id> – remove a file\n"
+        "/myfiles – list your uploads\n"
+        "/delete <id> – delete a file"
     )
 
-# ===== FILE HANDLER =====
+# ================== FILE HANDLER ==================
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
     doc = message.document
 
     if doc.file_size > MAX_SIZE:
-        bot.reply_to(message, "❌ File size must be under 20MB")
+        bot.reply_to(message, "❌ File must be under 20 MB")
         return
 
-    file_info = bot.get_file(doc.file_id)
-    tg_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+    try:
+        file_info = bot.get_file(doc.file_id)
+        tg_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-    file_id = uuid.uuid4().hex[:10]
+        file_id = uuid.uuid4().hex[:10]
 
-    files_col.insert_one({
-        "file_id": file_id,
-        "user_id": message.from_user.id,
-        "file_name": doc.file_name,
-        "file_size": doc.file_size,
-        "tg_url": tg_url,
-        "created_at": datetime.utcnow()
-    })
+        files_col.insert_one({
+            "file_id": file_id,
+            "user_id": message.from_user.id,
+            "file_name": doc.file_name,
+            "file_size": doc.file_size,
+            "tg_url": tg_url,
+            "created_at": datetime.utcnow()
+        })
 
-    final_link = f"{BLOGGER_PAGE}?id={file_id}"
+        final_link = f"{BLOGGER_PAGE}?id={file_id}"
 
-    bot.reply_to(
-        message,
-        f"✅ File uploaded!\n\n"
-        f"📄 Name: {doc.file_name}\n"
-        f"📦 Size: {human_size(doc.file_size)}\n\n"
-        f"🔗 Download link:\n{final_link}\n\n"
-        f"🆔 File ID: `{file_id}`",
-        parse_mode="Markdown"
-    )
+        bot.reply_to(
+            message,
+            f"✅ File uploaded!\n\n"
+            f"📄 Name: {doc.file_name}\n"
+            f"📦 Size: {human_size(doc.file_size)}\n"
+            f"🆔 ID: `{file_id}`\n\n"
+            f"🔗 Download link:\n{final_link}",
+            parse_mode="Markdown"
+        )
 
-# ===== MY FILES =====
+    except Exception as e:
+        bot.reply_to(message, "❌ Upload failed. Try again later.")
+        print("ERROR:", e)
+
+# ================== MY FILES ==================
 @bot.message_handler(commands=["myfiles"])
-def my_files(message):
+def cmd_myfiles(message):
     user_id = message.from_user.id
-    files = files_col.find({"user_id": user_id}).sort("created_at", -1).limit(10)
+    files = files_col.find(
+        {"user_id": user_id}
+    ).sort("created_at", -1).limit(10)
 
     text = "📂 Your files:\n\n"
     count = 0
@@ -110,14 +131,16 @@ def my_files(message):
 
     bot.reply_to(message, text)
 
-# ===== DELETE FILE =====
+# ================== DELETE FILE ==================
 @bot.message_handler(commands=["delete"])
-def delete_file(message):
-    try:
-        file_id = message.text.split()[1]
-    except:
+def cmd_delete(message):
+    parts = message.text.split()
+
+    if len(parts) != 2:
         bot.reply_to(message, "❌ Usage: /delete <file_id>")
         return
+
+    file_id = parts[1]
 
     result = files_col.delete_one({
         "file_id": file_id,
@@ -125,16 +148,18 @@ def delete_file(message):
     })
 
     if result.deleted_count:
-        bot.reply_to(message, "✅ File deleted")
+        bot.reply_to(message, "✅ File deleted successfully")
     else:
         bot.reply_to(message, "❌ File not found")
 
-# ===== BLOGGER API =====
+# ================== BLOGGER API ==================
 @app.route("/get")
 def get_file():
     fid = request.args.get("id")
-    file = files_col.find_one({"file_id": fid})
+    if not fid:
+        return "Invalid request"
 
+    file = files_col.find_one({"file_id": fid})
     if not file:
         return "Invalid or expired link"
 
@@ -144,6 +169,13 @@ def get_file():
 def home():
     return "Telegram File Bot is running"
 
-# ===== START =====
+# ================== RUN SERVICES ==================
+def run_flask():
+    app.run(host="0.0.0.0", port=PORT)
+
+def run_bot():
+    bot.infinity_polling(skip_pending=True)
+
 if __name__ == "__main__":
-    bot.infinity_polling()
+    threading.Thread(target=run_flask, daemon=True).start()
+    run_bot()
