@@ -3,18 +3,134 @@
 <head>
 <meta charset="UTF-8">
 <title>Telegram File Bot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { font-family: Arial, sans-serif; background: #f0f0f0; text-align: center; padding: 50px; }
-.container { background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; }
-a { color: #28a745; text-decoration: none; font-weight: bold; }
+body {
+    font-family: Arial, sans-serif;
+    background: #f4f4f4;
+    margin: 0;
+    padding: 20px;
+}
+.container {
+    max-width: 1000px;
+    margin: auto;
+    text-align: center;
+}
+h1 { color: #333; }
+.file-card {
+    background: #fff;
+    padding: 20px;
+    margin: 20px 0;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    text-align: left;
+}
+.file-header { display: flex; justify-content: space-between; align-items: center; }
+.file-name { font-weight: bold; font-size: 18px; }
+.file-size { color: #555; }
+button { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; color: #fff; font-size: 14px; }
+.download-btn { background: #28a745; }
+.stream-btn { background: #007bff; }
+#timer { font-size: 16px; margin: 10px 0; color: #777; }
+video, audio { margin-top: 15px; max-width: 100%; border-radius: 10px; display: block; }
+.file-block { border-top: 1px solid #eee; padding-top: 15px; margin-top: 15px; }
 </style>
 </head>
 <body>
 <div class="container">
 <h1>📂 Telegram File Bot</h1>
-<p>Upload files via Telegram and get direct download/stream links.</p>
-<p>Supported: Documents, Videos, Audio, Photos</p>
-<p><a href="https://t.me/YOUR_BOT_USERNAME">Open Telegram Bot</a></p>
+<p>Upload files via Telegram and stream/download them here.</p>
+
+{% if files %}
+    {% for file in files %}
+    <div class="file-card" id="card_{{ file.file_id }}">
+        <div class="file-header">
+            <span class="file-name">{{ file.file_name }}</span>
+            <span class="file-size">{{ human_size(file.file_size) }}</span>
+        </div>
+        <p id="timer_{{ file.file_id }}">Please wait 10 seconds...</p>
+        <a id="download_{{ file.file_id }}" href="{{ file.tg_url }}" download style="display:none;">
+            <button class="download-btn">Download</button>
+        </a>
+        {% if file.file_name.endswith(('.mp4','.webm','.ogg','.mp3','.wav')) %}
+        <button id="stream_{{ file.file_id }}" class="stream-btn" style="display:none;" onclick="playMedia('{{ file.file_id }}','{{ file.tg_url }}','{{ file.file_name }}')">Stream</button>
+        {% endif %}
+        <div id="media_{{ file.file_id }}"></div>
+    </div>
+    {% endfor %}
+{% else %}
+<p>No files uploaded yet.</p>
+{% endif %}
 </div>
+
+<script>
+// ---------------- Countdown & Media ----------------
+{% for file in files %}
+let seconds_{{ file.file_id }} = 10;
+const timerEl_{{ file.file_id }} = document.getElementById("timer_{{ file.file_id }}");
+const downloadEl_{{ file.file_id }} = document.getElementById("download_{{ file.file_id }}");
+const streamBtn_{{ file.file_id }} = document.getElementById("stream_{{ file.file_id }}");
+
+const countdown_{{ file.file_id }} = setInterval(()=>{
+    seconds_{{ file.file_id }}--;
+    timerEl_{{ file.file_id }}.innerText = "Please wait "+seconds_{{ file.file_id }}+" seconds...";
+    if(seconds_{{ file.file_id }} <= 0){
+        clearInterval(countdown_{{ file.file_id }});
+        timerEl_{{ file.file_id }}.style.display="none";
+        downloadEl_{{ file.file_id }}.style.display="inline-block";
+        if(streamBtn_{{ file.file_id }}) streamBtn_{{ file.file_id }}.style.display="inline-block";
+    }
+}, 1000);
+{% endfor %}
+
+function playMedia(fileId,url,fileName){
+    const container = document.getElementById("media_"+fileId);
+    const ext = fileName.split('.').pop().toLowerCase();
+    container.innerHTML = "";
+    if(['mp4','webm','ogg'].includes(ext)){
+        const video = document.createElement("video");
+        video.src = url;
+        video.controls = true;
+        video.autoplay = true;
+        container.appendChild(video);
+    } else if(['mp3','wav','ogg'].includes(ext)){
+        const audio = document.createElement("audio");
+        audio.src = url;
+        audio.controls = true;
+        audio.autoplay = true;
+        container.appendChild(audio);
+    }
+}
+
+// ------------- Safety Features -------------
+document.addEventListener("contextmenu", e => e.preventDefault()); // Disable right-click
+
+document.addEventListener("keydown", function(e) {
+    // Block common dev tools keys
+    if (e.key === "F12" || 
+        (e.ctrlKey && e.shiftKey && ["I","J","C"].includes(e.key.toUpperCase())) ||
+        (e.ctrlKey && e.key.toUpperCase() === "U")) {
+        alert("⚠️ Action not allowed.");
+        e.preventDefault();
+        window.location.href = "/"; // Optional: redirect
+    }
+});
+
+// Detect DevTools open (simple check)
+let devtoolsOpen = false;
+setInterval(()=>{
+    const widthThreshold = window.outerWidth - window.innerWidth > 160;
+    const heightThreshold = window.outerHeight - window.innerHeight > 160;
+    if(widthThreshold || heightThreshold){
+        if(!devtoolsOpen){
+            devtoolsOpen = true;
+            alert("⚠️ DevTools detected! Redirecting...");
+            window.location.href = "/";
+        }
+    } else {
+        devtoolsOpen = false;
+    }
+}, 1000);
+</script>
 </body>
 </html>
