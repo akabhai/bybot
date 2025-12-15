@@ -1,8 +1,6 @@
 import os
 import uuid
-import threading
 from datetime import datetime
-
 from flask import Flask, request
 import telebot
 from pymongo import MongoClient
@@ -12,13 +10,13 @@ from pymongo.errors import PyMongoError
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
 BLOGGER_PAGE = os.environ.get("BLOGGER_PAGE")
-PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # Render public URL
 
-if not BOT_TOKEN or not MONGO_URI or not BLOGGER_PAGE:
+if not BOT_TOKEN or not MONGO_URI or not BLOGGER_PAGE or not WEBHOOK_URL:
     raise RuntimeError("Missing required environment variables")
 
 # ================== INIT ==================
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ================== DATABASE ==================
@@ -67,7 +65,6 @@ def cmd_help(message):
         "/delete <id> – delete a file"
     )
 
-# ================== FILE HANDLER ==================
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
     doc = message.document
@@ -107,13 +104,10 @@ def handle_document(message):
         bot.reply_to(message, "❌ Upload failed. Try again later.")
         print("ERROR:", e)
 
-# ================== MY FILES ==================
 @bot.message_handler(commands=["myfiles"])
 def cmd_myfiles(message):
     user_id = message.from_user.id
-    files = files_col.find(
-        {"user_id": user_id}
-    ).sort("created_at", -1).limit(10)
+    files = files_col.find({"user_id": user_id}).sort("created_at", -1).limit(10)
 
     text = "📂 Your files:\n\n"
     count = 0
@@ -131,21 +125,16 @@ def cmd_myfiles(message):
 
     bot.reply_to(message, text)
 
-# ================== DELETE FILE ==================
 @bot.message_handler(commands=["delete"])
 def cmd_delete(message):
     parts = message.text.split()
-
     if len(parts) != 2:
         bot.reply_to(message, "❌ Usage: /delete <file_id>")
         return
 
     file_id = parts[1]
 
-    result = files_col.delete_one({
-        "file_id": file_id,
-        "user_id": message.from_user.id
-    })
+    result = files_col.delete_one({"file_id": file_id, "user_id": message.from_user.id})
 
     if result.deleted_count:
         bot.reply_to(message, "✅ File deleted successfully")
@@ -158,24 +147,27 @@ def get_file():
     fid = request.args.get("id")
     if not fid:
         return "Invalid request"
-
     file = files_col.find_one({"file_id": fid})
     if not file:
         return "Invalid or expired link"
-
     return file["tg_url"]
 
 @app.route("/")
 def home():
     return "Telegram File Bot is running"
 
-# ================== RUN SERVICES ==================
-def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
+# ================== WEBHOOK ==================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "ok", 200
 
-def run_bot():
-    bot.infinity_polling(skip_pending=True)
+# ================== SETUP WEBHOOK ==================
+bot.remove_webhook()
+bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")  # Must match Render public URL
 
+# ================== RUN FLASK ==================
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    run_bot()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
